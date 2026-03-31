@@ -1,0 +1,9 @@
+{
+  "id": "pdf-gemini-translate",
+  "name": "PDF Gemini Translate",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.12",
+  "description": "Automatically translate selected English text in Obsidian PDF views into Chinese with the Gemini API.",
+  "author": "Ashuai2005",
+  "isDesktopOnly": true
+}
