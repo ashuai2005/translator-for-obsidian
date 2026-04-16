@@ -198,7 +198,7 @@
 }
 
 .pdf-gemini-translate-popup-card-body.is-loading::before {
-  content: "Gemini translating...";
+  content: "Translating...";
   display: inline-block;
   color: var(--text-accent);
 }

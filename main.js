@@ -4,6 +4,7 @@ const DEFAULT_PROMPT_TEMPLATE =
   "As an academic expert with specialized knowledge in various fields, please provide a proficient and precise translation from {{sourceLanguage}} to {{targetLanguage}} of the academic text enclosed in 🔤. It is crucial to maintaining the original phrase or sentence and ensure accuracy while utilizing the appropriate language. The text is as follows: 🔤 {{text}} 🔤 Please provide the translated result without any additional explanation and remove 🔤.";
 
 const DEFAULT_SETTINGS = {
+  apiFormat: "gemini",
   apiKey: "",
   apiEndpoint: "https://generativelanguage.googleapis.com/v1beta/models",
   model: "gemini-3.1-flash-lite-preview",
@@ -80,7 +81,7 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
 
     this.addCommand({
       id: "translate-current-pdf-selection",
-      name: "Translate current PDF selection with Gemini",
+      name: "Translate current PDF selection",
       callback: async () => {
         await this.translateCurrentSelection({ force: true, manual: true });
       }
@@ -437,13 +438,13 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
       this.lastTranslation = "";
       this.renderPopup({
         info,
-        statusText: "请先在插件设置中填写 Gemini API Key。",
-        translationText: "未配置 Gemini API Key。",
+        statusText: "请先在插件设置中填写 API Key。",
+        translationText: "未配置 API Key。",
         isError: true
       });
 
       if (options.manual) {
-        new obsidian.Notice("请先在插件设置中填写 Gemini API Key。");
+        new obsidian.Notice("请先在插件设置中填写 API Key。");
       }
       return;
     }
@@ -547,7 +548,7 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
     this.nextAllowedRequestAt = Date.now() + this.settings.minRequestIntervalMs;
 
     try {
-      const translation = await this.translateWithGemini(info.normalizedText);
+      const translation = await this.translateWithApi(info.normalizedText);
       if (requestId !== this.activeRequestId) {
         return;
       }
@@ -608,17 +609,105 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
     }
   }
 
+  async translateWithApi(text) {
+    if (this.settings.apiFormat === "openai") {
+      return this.translateWithOpenAi(text);
+    }
+    return this.translateWithGemini(text);
+  }
+
+  buildOpenAiUrl() {
+    const apiKey = this.settings.apiKey.trim();
+    let endpoint = this.settings.apiEndpoint.trim();
+
+    if (!apiKey) {
+      throw new Error("API Key 不能为空。");
+    }
+
+    if (!endpoint) {
+      throw new Error("API 接口地址不能为空。");
+    }
+
+    if (!endpoint.endsWith("/chat/completions")) {
+      endpoint = `${endpoint.replace(/\/+$/, "")}/chat/completions`;
+    }
+
+    return endpoint;
+  }
+
+  async translateWithOpenAi(text) {
+    const url = this.buildOpenAiUrl();
+    const requestText = this.buildGeminiRequestText(text);
+    const apiKey = this.settings.apiKey.trim();
+    const model = this.settings.model.trim() || "gpt-3.5-turbo";
+
+    const body = {
+      model: model,
+      messages: [
+        {
+          role: "user",
+          content: requestText
+        }
+      ],
+      temperature: Number(this.settings.temperature) || 0,
+      max_tokens: Number(this.settings.maxOutputTokens) || 1024
+    };
+
+    let response;
+
+    try {
+      response = await obsidian.requestUrl({
+        url,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (error) {
+      throw error;
+    }
+
+    const payload =
+      response && typeof response.json === "object"
+        ? response.json
+        : response && typeof response.text === "string"
+          ? JSON.parse(response.text)
+          : null;
+
+    if (!payload || typeof payload !== "object") {
+      throw new Error("API 返回了无效响应。");
+    }
+
+    if (payload.error && payload.error.message) {
+      throw new Error(payload.error.message);
+    }
+
+    const choice = Array.isArray(payload.choices) ? payload.choices[0] : null;
+    const resultText =
+      choice && choice.message && typeof choice.message.content === "string"
+        ? choice.message.content
+        : "";
+
+    if (resultText) {
+      return resultText.trim();
+    }
+
+    throw new Error("API 返回了空结果。");
+  }
+
   buildGeminiUrl() {
     const apiKey = this.settings.apiKey.trim();
     const model = this.settings.model.trim();
     let endpoint = this.settings.apiEndpoint.trim();
 
     if (!apiKey) {
-      throw new Error("Gemini API Key 不能为空。");
+      throw new Error("API Key 不能为空。");
     }
 
     if (!endpoint) {
-      throw new Error("Gemini 接口地址不能为空。");
+      throw new Error("API 接口地址不能为空。");
     }
 
     endpoint = endpoint
@@ -628,7 +717,7 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
 
     if (!/\/models\//.test(endpoint)) {
       if (!model) {
-        throw new Error("Gemini 模型不能为空。");
+        throw new Error("模型名称不能为空。");
       }
       endpoint = `${endpoint}/${encodeURIComponent(model)}`;
     }
@@ -645,7 +734,7 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
 
   extractGeminiText(payload) {
     if (!payload || typeof payload !== "object") {
-      throw new Error("Gemini 返回了无效响应。");
+      throw new Error("API 返回了无效响应。");
     }
 
     if (payload.error && payload.error.message) {
@@ -670,10 +759,10 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
     }
 
     if (payload.promptFeedback && payload.promptFeedback.blockReason) {
-      throw new Error(`Gemini 拒绝了该请求：${payload.promptFeedback.blockReason}`);
+      throw new Error(`API 拒绝了该请求：${payload.promptFeedback.blockReason}`);
     }
 
-    throw new Error("Gemini 返回了空结果。");
+    throw new Error("API 返回了空结果。");
   }
 
   buildGeminiRequestText(text) {
@@ -786,31 +875,31 @@ class PdfGeminiTranslatePlugin extends obsidian.Plugin {
     const statusCode = this.getErrorStatusCode(error);
 
     if (statusCode === 429) {
-      return "Gemini 请求被限流或当前配额已用完（429）。等一会再试，或检查 API Key 配额、Billing、代理网关限流设置。";
+      return "API 请求被限流或当前配额已用完（429）。等一会再试，或检查 API 配额、Billing、代理网关限流设置。";
     }
 
     if (statusCode === 400) {
-      return "Gemini 请求格式不被当前接口接受（400）。通常是接口地址、模型、代理网关兼容性，或提示词内容过长导致。";
+      return "API 请求格式不被当前接口接受（400）。通常是接口地址、模型、代理网关兼容性，或提示词内容过长导致。";
     }
 
     if (statusCode === 401) {
-      return "Gemini API Key 无效或未填写（401）。";
+      return "API Key 无效或未填写（401）。";
     }
 
     if (statusCode === 403) {
-      return "Gemini 请求被拒绝（403）。请检查 API Key 权限、区域限制或代理配置。";
+      return "API 请求被拒绝（403）。请检查 API Key 权限、区域限制或代理配置。";
     }
 
     if (statusCode === 404) {
-      return "Gemini 接口地址或模型名称不对（404）。";
+      return "API 接口地址或模型名称不对（404）。";
     }
 
     if (statusCode >= 500 && statusCode < 600) {
-      return `Gemini 服务暂时不可用（${statusCode}）。稍后再试。`;
+      return `API 服务暂时不可用（${statusCode}）。稍后再试。`;
     }
 
     if (/Failed to fetch|NetworkError|fetch/i.test(rawMessage)) {
-      return "网络请求失败。请检查网络、代理或 Gemini 接口地址。";
+      return "网络请求失败。请检查网络、代理或接口地址。";
     }
 
     return rawMessage || "未知错误。";
@@ -1104,11 +1193,25 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
     containerEl.createEl("h2", { text: "PDF Gemini Translate" });
 
     new obsidian.Setting(containerEl)
-      .setName("Gemini API Key")
-      .setDesc("用于调用 Gemini API。只保存在本地 Obsidian 插件数据中。")
+      .setName("API 协议格式")
+      .setDesc("选择使用的 API 标准格式。默认 Gemini，若接第三方服务商 (如 OpenAI, DeepSeek, OneAPI代理)，请选 OpenAI 兼容。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("gemini", "Gemini 格式")
+          .addOption("openai", "OpenAI 兼容格式")
+          .setValue(settings.apiFormat || "gemini")
+          .onChange(async (value) => {
+            settings.apiFormat = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new obsidian.Setting(containerEl)
+      .setName("API Key")
+      .setDesc("用于调用 API 的凭证。仅保存在本地。")
       .addText((text) =>
         text
-          .setPlaceholder("AIza...")
+          .setPlaceholder("API Key")
           .setValue(settings.apiKey)
           .onChange(async (value) => {
             settings.apiKey = value.trim();
@@ -1117,8 +1220,8 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName("Gemini 接口地址")
-      .setDesc("可以填 models 根地址，也可以填完整模型地址。")
+      .setName("API 接口地址 (Base URL)")
+      .setDesc("对于 Gemini 填 models 根地址，对于 OpenAI 格式填类似 https://api.openai.com/v1")
       .addText((text) =>
         text
           .setPlaceholder("https://generativelanguage.googleapis.com/v1beta/models")
@@ -1130,8 +1233,8 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
       );
 
     new obsidian.Setting(containerEl)
-      .setName("模型")
-      .setDesc("当上面的地址是 models 根地址时，这里会拼接到请求 URL。")
+      .setName("模型名称 (Model)")
+      .setDesc("对应您使用的模型名称，如 deepseek-chat, gpt-4o 等")
       .addText((text) =>
         text
           .setPlaceholder("gemini-3.1-flash-lite-preview")
@@ -1188,7 +1291,7 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
 
     new obsidian.Setting(containerEl)
       .setName("低延迟模式")
-      .setDesc("优先速度。Gemini 3 使用 minimal thinking，Gemini 2.5 使用 thinkingBudget=0。")
+      .setDesc("优先极速输出。仅当开启 Gemini 协议且使用适用模型时生效。")
       .addToggle((toggle) =>
         toggle.setValue(settings.lowLatencyMode).onChange(async (value) => {
           settings.lowLatencyMode = value;
@@ -1276,7 +1379,7 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
 
     new obsidian.Setting(containerEl)
       .setName("最小请求间隔")
-      .setDesc("单位毫秒。Gemini 3.1 Flash Lite 免费额度为 15 RPM，建议至少 4000 以避免由于频繁访问导致限流。")
+      .setDesc("单位毫秒。限制请求频率，建议保持在 4000 以上以避免被服务端限流（429）。")
       .addText((text) =>
         text.setValue(String(settings.minRequestIntervalMs)).onChange(async (value) => {
           const parsed = Number.parseInt(value, 10);
@@ -1316,7 +1419,7 @@ class PdfGeminiTranslateSettingTab extends obsidian.PluginSettingTab {
     containerEl.createDiv({
       cls: "pdf-gemini-translate-setting-note",
       text:
-        "当前版本只监听 Obsidian 桌面端 PDF 文本层中的选区，不会把结果写回 PDF 批注。若你接的是代理网关，优先确保它兼容 Gemini generateContent 接口。"
+        "当前版本只监听 Obsidian 桌面端 PDF 文本层中的选区，不会把结果写回 PDF 批注。若接代理网关，请先确认协议格式配置是否对应。"
     });
   }
 }
